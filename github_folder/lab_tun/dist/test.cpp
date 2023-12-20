@@ -22,9 +22,13 @@
 #include <mutex>
 #include <csignal>
 #include <cstdlib>
+#include <cstdio>
 #include <sstream>
 #include <cmath>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <array>
 
 using namespace std;
 char tun_dev[IFNAMSIZ] = "tun0";
@@ -115,24 +119,25 @@ int
 ifreq_set_broadcast(int fd, const char *dev, unsigned int addr) {
 	return ifreq_set_sockaddr(fd, dev, SIOCSIFBRDADDR, addr);
 }
-void tun_from_serv(int tun_fd_serv, int sockfd, struct sockaddr_in cli_addr){
-	char rcvbuf[1500];
+
+void handle_client(int sockfd, int tun_fd_serv, struct sockaddr_in cli_addr, unsigned int client_num){
 	char sendline[1500];
-	socklen_t clilen;
-	// lock_.lock();
-	// memset(bset, '0', sizeof(bset) - 1);
-	// lock_.unlock();
-	// this write when ping start from server
+	char rcvbuf[1500];
+	int n;
+	bzero(&sendline, sizeof(sendline));
+	sprintf(sendline, "%u\n", client_num);
+	if(sendto(sockfd, sendline, sizeof(sendline), 0, (struct sockaddr *) &cli_addr, sizeof(cli_addr)) < 0){
+		errquit("server-handle_client send error");
+	}
+	else{ cout << "send to cli success!\n";}
 	while(1){
-		clilen = sizeof(cli_addr);
-		int n;
-        bzero(&rcvbuf, sizeof(rcvbuf));
-		if((n = read(tun_fd_serv, rcvbuf, sizeof(rcvbuf))) < 0)
+		// TODO: handle connection to client
+		bzero(&rcvbuf, sizeof(rcvbuf));
+		if((n = read(tun_fd_serv, rcvbuf, sizeof(rcvbuf))) < 0){
 			continue;
-		bzero(&sendline, sizeof(sendline));
-		strcpy(sendline, rcvbuf);
-		if(sendto(sockfd, sendline, sizeof(sendline), 0, (struct sockaddr *) &cli_addr, clilen) < 0)
-				errquit("server thread 2 sendto");
+		}else{
+			cout << "server read " << n << " byte from tun socket\n";
+		} 
 	}
 }
 int
@@ -143,10 +148,9 @@ tunvpn_server(int port) {
 	// XXX: implement your server codes here ...
 	fprintf(stderr, "## [server] starts ...\n");
 	struct sockaddr_in serv_addr, cli_addr;
-	socklen_t clilen;
 	short flags;
 	int sockfd;
-	unsigned int x = 0;
+	unsigned int client_num = 0;
 	if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) errquit("server create socket");
 	bzero(&serv_addr, sizeof(serv_addr));
 	bzero(&cli_addr, sizeof(cli_addr));
@@ -155,24 +159,21 @@ tunvpn_server(int port) {
     serv_addr.sin_port = htons(port);
 	int n;
 	if(bind(sockfd, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) errquit("server bind");
-	clilen = sizeof(cli_addr);
+	socklen_t clilen = sizeof(cli_addr);
 	int tun_fd_serv;
 	if((tun_fd_serv = tun_alloc(tun_dev)) < 0){
+		close(sockfd);
 		errquit("tun_alloc");
 	}
 	cout << "Allocate fd: " << tun_fd_serv << endl;
 	unsigned int addr = MYADDR;
-	// ss.str("");
-    // ss.clear();
-	// ss << std::hex << MYADDR;
-	// ss >> addr;
-	// addr = stoi(MYADDR, nullptr, 16);
 	
 	addr = htonl(addr);
 	cout << "server addr: " << addr << endl;
 	printf("%u.%u.%u.%u\n", NIPQUAD(addr));
 	
 	if(ifreq_set_addr(sockfd, tun_dev, addr) < 0){
+		close(sockfd);
 		close(tun_fd_serv);
 		errquit("ifreq_set_addr");
 	}
@@ -181,69 +182,82 @@ tunvpn_server(int port) {
 	// ss << std::hex << NETMASK;
 	// ss >> x;
 	// cout << "server netmask: " << x;
-	unsigned int mask = static_cast<unsigned int>(NETMASK);;
+	unsigned int mask = NETMASK;
 	// sscanf(NETMASK, "%x", &mask);
 	mask = htonl(mask);
 	cout << "server mask: " << mask;
 	printf("%u.%u.%u.%u\n", NIPQUAD(mask));
 	if(ifreq_set_netmask(sockfd, tun_dev, mask) < 0){
+		close(sockfd);
 		close(tun_fd_serv);
 		errquit("ifreq_set_netmask");
 	}
 
 	if(ifreq_set_mtu(sockfd, tun_dev, 1400) < 0){
+		close(sockfd);
 		close(tun_fd_serv);
 		errquit("ifreq_set_netmask");
 	}
 	if (ifreq_get_flag(sockfd, tun_dev, &flags) < 0){
+		close(sockfd);
         close(tun_fd_serv);
 		errquit("ifreq_get_flag");
 	}
 	// flags |= (IFF_POINTOPOINT|IFF_MULTICAST|IFF_NOARP|IFF_UP);  // Set the IFF_UP flag to bring up the interface
 	flags |= IFF_UP;
 	if (ifreq_set_flag(sockfd, tun_dev, flags) < 0) {
+		close(sockfd);
         close(tun_fd_serv);
 		errquit("ifreq_set_flag");
 	}
-	thread receive_tun(tun_from_serv, tun_fd_serv, sockfd, cli_addr);
-	receive_tun.detach();
+	// thread receive_tun(tun_from_serv, tun_fd_serv, sockfd, cli_addr);
+	// receive_tun.detach();
 	// this write when server receive ping from another client
 	while(1) { 
+		// when there are a client connect in, create a new thread to handle it
+		client_num += 1;
 		bzero(&rcvbuf, sizeof(rcvbuf));
+		// data from client pkt is no use, this pkt is used for client detect
 		if(recvfrom(sockfd, rcvbuf, sizeof(rcvbuf), 0, (struct sockaddr*)&cli_addr, &clilen) < 0)
 			continue;
-		bzero(&sendline, sizeof(sendline));
-		strcpy(sendline, rcvbuf);
-		if((n = write(sockfd, sendline, sizeof(sendline))) < 0) errquit("server tun write");
-		
-		// if(recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cli_addr, &clilen) < 0){
-		// 	errquit("server recvfrom");
-		// }	
-		// TODO: write buffer to tun0, send through it
-		// if((n = write(sockfd, buffer, sizeof(buffer))) < 0) errquit("server tun write");
+		else cout << "recv from client!\n";
+		thread new_client(handle_client, sockfd, tun_fd_serv, cli_addr, client_num);
+		new_client.detach();
 		
 	}
 	return 0;
 }
-void tun_from_cli(int tun_fd_cli, int sockfd){
-	char rcvbuf[1500];
-	char sendline[1500];
-	int n;
-	// lock_.lock();
-	// memset(bset, '0', sizeof(bset) - 1);
-	// lock_.unlock();
+// void tun_from_cli(int tun_fd_cli, int sockfd){
+// 	char rcvbuf[1500];
+// 	char sendline[1500];
+// 	int n;
+// 	// lock_.lock();
+// 	// memset(bset, '0', sizeof(bset) - 1);
+// 	// lock_.unlock();
 	
-	// this write when client ping server 
-	// read from tun, and write to network through sockfd
-	while(1){
-		bzero(&rcvbuf, sizeof(rcvbuf));
-		if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0) 
-			continue;
-		bzero(&sendline, sizeof(sendline));
-		strcpy(sendline, rcvbuf);
-		if(write(sockfd, sendline, sizeof(sendline)) < 0)
-			errquit("tun_from_cli udp send");
-	}
+// 	// this write when client ping server 
+// 	// read from tun, and write to network through sockfd
+// 	while(1){
+// 		bzero(&rcvbuf, sizeof(rcvbuf));
+// 		if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0) 
+// 			continue;
+// 		bzero(&sendline, sizeof(sendline));
+// 		strcpy(sendline, rcvbuf);
+// 		if(write(sockfd, sendline, sizeof(sendline)) < 0)
+// 			errquit("tun_from_cli udp send");
+// 	}
+// }
+string exec(const char* cmd) {
+    array<char, 128> buffer;
+    string result;
+    unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
 }
 
 int
@@ -251,6 +265,22 @@ tunvpn_client(const char *server, int port) {
 	char rcvbuf[1500];
 	char sendline[1500];
 	char tun_dev[20] = "tun0";
+	// Concatenate the command
+    // char fullCmd[256] = "nslookup server | grep 172";
+	// string result = exec(fullCmd);
+	// cout << "result: " << result << endl;
+	char server_ip[40] = "172.28.28.2";
+	// size_t addressPos = result.find("Address: ");
+	// string ip_parse;
+    // if (addressPos != std::string::npos) {
+    //     // Extract the address substring
+    //     ip_parse = result.substr(addressPos + 9);
+	// 	ip_parse.push_back('\0');
+    //     // Print or use the extracted address
+    //     std::cout << "Parsed Address: " << ip_parse << std::endl;
+	// 	// server_ip = addressSubstring.c_str();
+	// }
+	// strcpy(server_ip, ip_parse.c_str());
 	int n;
 	// XXX: implement your client codes here ...
 	fprintf(stderr, "## [client] starts ...\n");
@@ -260,31 +290,85 @@ tunvpn_client(const char *server, int port) {
 	memset(&serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_port = htons(port);
-	if(inet_pton(AF_INET, server, &serv_addr.sin_addr) != 1) {
+	if(inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) != 1) {
 		return -fprintf(stderr, "** cannot convert IPv4 address for client\n");
 	}
-	socklen_t serv_len = sizeof(serv_addr);
-
+	
 	if((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0){ errquit("client socket");}
 	else cout << "successfully create socket\n";
 	if(connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){ errquit("client connect") } 
 	else cout << "successfully connect to server\n";
+	cout << "server config complete!\n";
+	// thread receive_tun(tun_from_cli, tun_fd_cli, sockfd);
+	// receive_tun.detach();
+	
+	// receive client number from server, tun addr = ADDRBASE+client_num
+	bzero(&sendline, sizeof(sendline));
+	sprintf(sendline, "Hello, server");
+	// write to vpn network, so ping can catch it
+	if(write(sockfd, sendline, sizeof(sendline)) < 0){
+		errquit("client sockfd write wrong");
+	}
+	else{ cout << "send hello success!\n"; }
+	bzero(&rcvbuf, sizeof(rcvbuf));
+	if((n = read(sockfd, rcvbuf, sizeof(rcvbuf))) < 0){
+		errquit("client sockfd rcv wrong");
+	}
+	else{ cout << "read from server success!\n";}
+	int cli_num = 0;
+	sscanf(rcvbuf, "%d\n", &cli_num);
+	unsigned int cli_tun_addr = ADDRBASE; cli_tun_addr += cli_num;
+	cout << "cli number: " << cli_num << endl;
 	int tun_fd_cli;
 	if((tun_fd_cli = tun_alloc(tun_dev)) < 0){
 		errquit("tun_alloc");
 	}
-	thread receive_tun(tun_from_cli, tun_fd_cli, sockfd);
-	receive_tun.detach();
+
+	cli_tun_addr = htonl(cli_tun_addr);
+	cout << "client addr: " << cli_tun_addr << endl;
+	printf("%u.%u.%u.%u\n", NIPQUAD(cli_tun_addr));
+	
+	if(ifreq_set_addr(sockfd, tun_dev, cli_tun_addr) < 0){
+		close(sockfd);
+		close(tun_fd_cli);
+		errquit("ifreq_set_addr");
+	}
+
+	if(ifreq_set_mtu(sockfd, tun_dev, 1400) < 0){
+		close(sockfd);
+		close(tun_fd_cli);
+		errquit("ifreq_set_netmask");
+	}
+	short int flags = 0;
+	if (ifreq_get_flag(sockfd, tun_dev, &flags) < 0){
+		close(sockfd);
+        close(tun_fd_cli);
+		errquit("ifreq_get_flag");
+	}
+	// flags |= (IFF_POINTOPOINT|IFF_MULTICAST|IFF_NOARP|IFF_UP);  // Set the IFF_UP flag to bring up the interface
+	flags |= IFF_UP;
+	if (ifreq_set_flag(sockfd, tun_dev, flags) < 0) {
+		close(sockfd);
+        close(tun_fd_cli);
+		errquit("ifreq_set_flag");
+	}
 	// this write when server ping client 
 	while(1) { 
+		
 		bzero(&rcvbuf, sizeof(rcvbuf));
-		if((n = read(sockfd, rcvbuf, sizeof(rcvbuf))) < 0)
+		if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0){
 			continue;
-		bzero(&sendline, sizeof(sendline));
-		strcpy(sendline, rcvbuf);
-		// write to vpn network, so ping can catch it
-		if(write(tun_fd_cli, sendline, sizeof(sendline)) < 0)
-			errquit("tun_from_cli udp send");
+		}else{
+			cout << "read " << n << " byte from udp socket\n";
+		}
+		// bzero(&sendline, sizeof(sendline));
+		// strcpy(sendline, rcvbuf);
+		// // write to vpn network, so ping can catch it
+		// if(write(tun_fd_cli, sendline, sizeof(sendline)) < 0){
+		// 	errquit("tun_from_cli udp send");
+		// }else{
+		// 	cout << "write sucess";
+		// }
 	}
 	return 0;
 }

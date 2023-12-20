@@ -206,7 +206,7 @@ tunvpn_server(int port) {
 		client_num += 1;
 		bzero(&rcvbuf, sizeof(rcvbuf));
 		// data from client pkt is no use, this pkt is used for client detect
-		if(recvfrom(sockfd, tun_fd_serv, rcvbuf, sizeof(rcvbuf), 0, (struct sockaddr*)&cli_addr, &clilen) < 0)
+		if(recvfrom(sockfd, rcvbuf, sizeof(rcvbuf), 0, (struct sockaddr*)&cli_addr, &clilen) < 0)
 			continue;
 		else cout << "recv from client!\n";
 		thread new_client(handle_client, sockfd, tun_fd_serv, cli_addr, client_num);
@@ -247,11 +247,11 @@ tunvpn_server(int port) {
 // }
 
 int
-tunvpn_client(const char *server, int port) {
+tunvpn_client(const char *server, int port, const char* server_ip) {
 	char rcvbuf[1500];
 	char sendline[1500];
 	char tun_dev[20] = "tun0";
-	char server_ip[40] = "172.28.28.2";
+	// char server_ip[40] = "172.28.28.2";
 	int n;
 	// XXX: implement your client codes here ...
 	fprintf(stderr, "## [client] starts ...\n");
@@ -360,7 +360,7 @@ int main(int argc, char *argv[]) {
 		return tunvpn_server(strtol(argv[2], NULL, 0));
 	} else if(strcmp(argv[1], "client") == 0) {
 		if(argc < 4) return usage(argv[0]);
-		return tunvpn_client(argv[2], strtol(argv[3], NULL, 0));
+		return tunvpn_client(argv[2], strtol(argv[3], NULL, 0), argv[4]);
 	} else {
 		fprintf(stderr , "## unknown mode %s\n", argv[1]);
 	}
