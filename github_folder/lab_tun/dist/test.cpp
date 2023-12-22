@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <netdb.h>
@@ -16,25 +17,27 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
-#include <linux/if.h>
-#include <linux/if_tun.h>
 #include <thread>
 #include <mutex>
-#include <csignal>
 #include <cstdlib>
-#include <cstdio>
 #include <sstream>
 #include <cmath>
-#include <memory>
-#include <stdexcept>
 #include <string>
-#include <array>
+#include <assert.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
 
 using namespace std;
 char tun_dev[IFNAMSIZ] = "tun0";
 #define NIPQUAD(m)	((unsigned char*) &(m))[0], ((unsigned char*) &(m))[1], ((unsigned char*) &(m))[2], ((unsigned char*) &(m))[3]
 #define errquit(m)	{ perror(m); exit(-1); }
-
+#define MTU 1400
+#define MAXLINE 1500
 #define MYADDR		0x0a0000fe // 10.0.0.254
 // char MYADDR[10] = "0a0000fe";
 #define ADDRBASE	0x0a00000a // 10.0.0.10
@@ -121,29 +124,108 @@ ifreq_set_broadcast(int fd, const char *dev, unsigned int addr) {
 }
 
 void handle_client(int sockfd, int tun_fd_serv, struct sockaddr_in cli_addr, unsigned int client_num){
-	char sendline[1500];
-	char rcvbuf[1500];
+	char udp_buf[MAXLINE];
+	char tun_buf[MAXLINE];
 	int n;
-	bzero(&sendline, sizeof(sendline));
-	sprintf(sendline, "%u\n", client_num);
-	if(sendto(sockfd, sendline, sizeof(sendline), 0, (struct sockaddr *) &cli_addr, sizeof(cli_addr)) < 0){
+	socklen_t cli_len = sizeof(cli_addr);
+	bzero(&udp_buf, sizeof(udp_buf));
+	sprintf(udp_buf, "%u\n", client_num);
+	if(sendto(sockfd, udp_buf, sizeof(udp_buf), 0, (struct sockaddr *) &cli_addr, cli_len) < 0){
 		errquit("server-handle_client send error");
 	}
-	else{ cout << "send to cli success!\n";}
+	else{ cout << "on udp socket send to cli success!\n";}
+
+	bzero(&udp_buf, sizeof(udp_buf));
+	if((n = read(tun_fd_serv, udp_buf, MAXLINE)) < 0){
+		errquit("server tun0 read wrong");
+	}else{ 
+		cout << "server tun0 read from server success!\n";
+		cout << udp_buf << endl;
+		}
+
+	bzero(&udp_buf, sizeof(udp_buf));
+	sprintf(udp_buf, "send to client tun");
+	// write to vpn network, so ping can catch it
+	if((n = write(tun_fd_serv, udp_buf, sizeof(udp_buf))) < 0){
+		errquit("server tun0 write wrong");
+	}
+	else{ cout << "server send tun0 sucess!\n"; }
+	
 	while(1){
-		// TODO: handle connection to client
-		bzero(&rcvbuf, sizeof(rcvbuf));
-		if((n = read(tun_fd_serv, rcvbuf, sizeof(rcvbuf))) < 0){
+		// TODO: handle connection to client 
+		cout << "in while loop\n";
+		fd_set readset;  
+		FD_ZERO(&readset);
+		FD_SET(tun_fd_serv, &readset);
+		FD_SET(sockfd, &readset);
+		int max_fd = max(tun_fd_serv, sockfd) + 1;
+		cout << "max_fd: " << max_fd << endl;
+		// select block when none of fd in readset "ready"
+		if (-1 == select(max_fd, &readset, NULL, NULL, NULL)) {
+			// perror("select error");
+			cout << "select error...\n";
 			continue;
 		}else{
-			cout << "server read " << n << " byte from tun socket\n";
-		} 
+			cout << "select success!\n";
+		}
+		int r;
+		int counter = 0;
+		cout << "after select\n";
+		if (FD_ISSET(tun_fd_serv, &readset)) {
+			counter++;
+			cout << "read from tun fd\n";
+			r = read(tun_fd_serv, tun_buf, MAXLINE);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("read from tun_fd error");
+				cout << "read from tun_fd error\n";
+				continue;
+			}
+			// encrypt(tun_buf, udp_buf, r);
+			memcpy(udp_buf, tun_buf, r);
+			printf("Writing to UDP %d bytes ...\n", r);
+
+			r = sendto(sockfd, udp_buf, r, 0, (struct sockaddr *) &cli_addr, cli_len);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("sendto udp_fd error");
+				cout << "sendto udp_fd error\n";
+				continue;
+			}
+		}
+		cout << "after choose tun fd\n";
+		if (FD_ISSET(sockfd, &readset)) {
+			counter++;
+			cout << "read from udp fd\n";
+			r = recvfrom(sockfd, udp_buf, MAXLINE, 0, (struct sockaddr *) &cli_addr, &cli_len);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("recvfrom udp_fd error");
+				cout << "recvfrom udp_fd error\n";
+				continue;
+			}
+
+			memcpy(tun_buf, udp_buf, r);
+			printf("Writing to tun %d bytes ...\n", r);
+
+			r = write(tun_fd_serv, tun_buf, r);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("write tun_fd error");
+				cout << "write tun_fd error\n";
+				continue;
+			}
+		}
+		cout << "after choose udp fd\n";
+		if(counter == 0){
+			cout << "waiting packet...\n";
+		}
 	}
 }
 int
 tunvpn_server(int port) {
-	char rcvbuf[1500];
-	char sendline[1500];
+	char rcvbuf[MAXLINE];
+	char sendline[MAXLINE];
 	stringstream ss;
 	// XXX: implement your server codes here ...
 	fprintf(stderr, "## [server] starts ...\n");
@@ -210,9 +292,9 @@ tunvpn_server(int port) {
         close(tun_fd_serv);
 		errquit("ifreq_set_flag");
 	}
-	// thread receive_tun(tun_from_serv, tun_fd_serv, sockfd, cli_addr);
-	// receive_tun.detach();
 	// this write when server receive ping from another client
+	
+	
 	while(1) { 
 		// when there are a client connect in, create a new thread to handle it
 		client_num += 1;
@@ -224,63 +306,34 @@ tunvpn_server(int port) {
 		thread new_client(handle_client, sockfd, tun_fd_serv, cli_addr, client_num);
 		new_client.detach();
 		
+		// bzero(&sendline, sizeof(sendline));
+		// strcpy(sendline, rcvbuf);
+		// if((n = write(sockfd, sendline, sizeof(sendline))) < 0) errquit("server tun write");
+		
+		// if(recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cli_addr, &clilen) < 0){
+		// 	errquit("server recvfrom");
+		// }	
+		// TODO: write buffer to tun0, send through it
+		// if((n = write(sockfd, buffer, sizeof(buffer))) < 0) errquit("server tun write");
+		
 	}
 	return 0;
 }
-// void tun_from_cli(int tun_fd_cli, int sockfd){
-// 	char rcvbuf[1500];
-// 	char sendline[1500];
-// 	int n;
-// 	// lock_.lock();
-// 	// memset(bset, '0', sizeof(bset) - 1);
-// 	// lock_.unlock();
-	
-// 	// this write when client ping server 
-// 	// read from tun, and write to network through sockfd
-// 	while(1){
-// 		bzero(&rcvbuf, sizeof(rcvbuf));
-// 		if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0) 
-// 			continue;
-// 		bzero(&sendline, sizeof(sendline));
-// 		strcpy(sendline, rcvbuf);
-// 		if(write(sockfd, sendline, sizeof(sendline)) < 0)
-// 			errquit("tun_from_cli udp send");
-// 	}
-// }
-string exec(const char* cmd) {
-    array<char, 128> buffer;
-    string result;
-    unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
-    if (!pipe) {
-        throw std::runtime_error("popen() failed!");
-    }
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-    }
-    return result;
+static int max(int a, int b) {
+  return a > b ? a : b;
 }
-
 int
-tunvpn_client(const char *server, int port) {
+tunvpn_client(const char *server, int port, const char* server_ip) {
 	char rcvbuf[1500];
 	char sendline[1500];
+	char tun_buf[1500];
+	char udp_buf[1500];
 	char tun_dev[20] = "tun0";
-	// Concatenate the command
-    // char fullCmd[256] = "nslookup server | grep 172";
-	// string result = exec(fullCmd);
-	// cout << "result: " << result << endl;
-	char server_ip[40] = "172.28.28.2";
-	// size_t addressPos = result.find("Address: ");
-	// string ip_parse;
-    // if (addressPos != std::string::npos) {
-    //     // Extract the address substring
-    //     ip_parse = result.substr(addressPos + 9);
-	// 	ip_parse.push_back('\0');
-    //     // Print or use the extracted address
-    //     std::cout << "Parsed Address: " << ip_parse << std::endl;
-	// 	// server_ip = addressSubstring.c_str();
-	// }
-	// strcpy(server_ip, ip_parse.c_str());
+	struct hostent *host;
+	if((host = gethostbyname(server)) == NULL){
+		errquit("gethostbyname error");
+	}
+	// char server_ip[40] = "172.28.28.2";
 	int n;
 	// XXX: implement your client codes here ...
 	fprintf(stderr, "## [client] starts ...\n");
@@ -290,14 +343,14 @@ tunvpn_client(const char *server, int port) {
 	memset(&serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_port = htons(port);
-	if(inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) != 1) {
-		return -fprintf(stderr, "** cannot convert IPv4 address for client\n");
-	}
-	
+	// if(inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) != 1) {
+	// 	return -fprintf(stderr, "** cannot convert IPv4 address for client\n");
+	// }
+	serv_addr.sin_addr.s_addr = *(long *)(host->h_addr_list[0]);
 	if((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0){ errquit("client socket");}
 	else cout << "successfully create socket\n";
-	if(connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){ errquit("client connect") } 
-	else cout << "successfully connect to server\n";
+	// if(connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0){ errquit("client connect") } 
+	// else cout << "successfully connect to server\n";
 	cout << "server config complete!\n";
 	// thread receive_tun(tun_from_cli, tun_fd_cli, sockfd);
 	// receive_tun.detach();
@@ -306,12 +359,12 @@ tunvpn_client(const char *server, int port) {
 	bzero(&sendline, sizeof(sendline));
 	sprintf(sendline, "Hello, server");
 	// write to vpn network, so ping can catch it
-	if(write(sockfd, sendline, sizeof(sendline)) < 0){
+	if(sendto(sockfd, sendline, sizeof(sendline), 0, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0){
 		errquit("client sockfd write wrong");
 	}
 	else{ cout << "send hello success!\n"; }
 	bzero(&rcvbuf, sizeof(rcvbuf));
-	if((n = read(sockfd, rcvbuf, sizeof(rcvbuf))) < 0){
+	if((n = recvfrom(sockfd, rcvbuf, MTU, 0, NULL, NULL)) < 0){
 		errquit("client sockfd rcv wrong");
 	}
 	else{ cout << "read from server success!\n";}
@@ -352,23 +405,114 @@ tunvpn_client(const char *server, int port) {
         close(tun_fd_cli);
 		errquit("ifreq_set_flag");
 	}
+	// bzero(&sendline, sizeof(sendline));
+	// sprintf(sendline, "aaaaaaaaaa\nsend to server tun from client");
+	// // sprintf(sendline, "aaaaaaaaaa sen");
+	// ssize_t len = strlen(sendline);
+	// // for(int i = 0; i < len; i+=2){
+	// // 	sendline[i] = 'a';
+	// // 	sendline[i+1] = 'b';
+	// // }
+	// // sendline[strlen(sendline)] = '\0';
+	// // sendline[MTU] = '\0';
+	// // write to vpn network, so ping can catch it
+
+	// cout << "tun_fd_cli: " << tun_fd_cli << "send strlen: " << strlen(sendline) << endl;
+	// cout << sendline << '\n';
+	// if((n = write(tun_fd_cli, sendline, len)) < 0){
+	// 	errquit("client tun0 write wrong");
+	// }
+	// else{ cout << "send tun0 sucess!\n"; }
+	// bzero(&rcvbuf, sizeof(rcvbuf));
+	// if((n = read(tun_fd_cli, rcvbuf, MAXLINE)) < 0){
+	// 	errquit("client tun0 read wrong");
+	// }
+	// else{ 
+	// 	cout << "client tun0 read from server success!\n";
+	// 	cout << rcvbuf << endl;
+	// 	}
+
+
 	// this write when server ping client 
 	while(1) { 
-		
-		bzero(&rcvbuf, sizeof(rcvbuf));
-		if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0){
+		cout << "in client while loop\n";
+		fd_set readset;  
+		FD_ZERO(&readset);
+		FD_SET(tun_fd_cli, &readset);
+		FD_SET(sockfd, &readset);
+		int max_fd = max(tun_fd_cli, sockfd) + 1;
+		cout << "max_fd: " << max_fd << endl;
+		// select block when none of fd in readset "ready"
+		if (-1 == select(max_fd, &readset, NULL, NULL, NULL)) {
+			// perror("select error");
+			cout << "select error...\n";
 			continue;
 		}else{
-			cout << "read " << n << " byte from udp socket\n";
+			cout << "select success!\n";
 		}
+		int r;
+		int counter = 0;
+		cout << "after select\n";
+		if (FD_ISSET(tun_fd_cli, &readset)) {
+			counter++;
+			cout << "read from tun fd\n";
+			r = read(tun_fd_cli, tun_buf, MAXLINE);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("read from tun_fd error");
+				cout << "read from tun_fd error\n";
+				continue;
+			}
+			// encrypt(tun_buf, udp_buf, r);
+			memcpy(udp_buf, tun_buf, r);
+			printf("Writing to UDP %d bytes ...\n", r);
+
+			r = sendto(sockfd, udp_buf, r, 0, (const struct sockaddr *)&serv_addr, sizeof(serv_addr));
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("sendto udp_fd error");
+				cout << "sendto udp_fd error\n";
+				continue;
+			}
+		}
+		cout << "after choose tun fd\n";
+		if (FD_ISSET(sockfd, &readset)) {
+			counter++;
+			cout << "read from udp fd\n";
+			r = recvfrom(sockfd, udp_buf, MAXLINE, 0, NULL, NULL);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("recvfrom udp_fd error");
+				cout << "recvfrom udp_fd error\n";
+				continue;
+			}
+
+			memcpy(tun_buf, udp_buf, r);
+			printf("Writing to tun %d bytes ...\n", r);
+
+			r = write(tun_fd_cli, tun_buf, r);
+			if (r < 0) {
+				// TODO: ignore some errno
+				// errquit("write tun_fd error");
+				cout << "write tun_fd error\n";
+				continue;
+			}
+		}
+		cout << "after choose udp fd\n";
+		if(counter == 0){
+			cout << "waiting packet...\n";
+		}
+		// bzero(&rcvbuf, sizeof(rcvbuf));
+		// if((n = read(tun_fd_cli, rcvbuf, sizeof(rcvbuf))) < 0){
+		// 	continue;
+		// }else{
+		// 	cout << "recv from ping";
+		// }
 		// bzero(&sendline, sizeof(sendline));
 		// strcpy(sendline, rcvbuf);
 		// // write to vpn network, so ping can catch it
-		// if(write(tun_fd_cli, sendline, sizeof(sendline)) < 0){
+		// if(write(tun_fd_cli, sendline, sizeof(sendline)) < 0)
 		// 	errquit("tun_from_cli udp send");
-		// }else{
-		// 	cout << "write sucess";
-		// }
 	}
 	return 0;
 }
@@ -393,7 +537,7 @@ int main(int argc, char *argv[]) {
 		return tunvpn_server(strtol(argv[2], NULL, 0));
 	} else if(strcmp(argv[1], "client") == 0) {
 		if(argc < 4) return usage(argv[0]);
-		return tunvpn_client(argv[2], strtol(argv[3], NULL, 0));
+		return tunvpn_client(argv[2], strtol(argv[3], NULL, 0), argv[4]);
 	} else {
 		fprintf(stderr , "## unknown mode %s\n", argv[1]);
 	}

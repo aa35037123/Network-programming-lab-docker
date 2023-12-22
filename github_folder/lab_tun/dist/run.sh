@@ -37,7 +37,7 @@ client)
 	$TUNVPN client server $PORT &
 	;;
 custom)
-	$TUNVPN client server $PORT $2 &
+	$TUNVPN client server $PORT $2 & 
 	;;
 *)
 	echo "## unknown profile"
