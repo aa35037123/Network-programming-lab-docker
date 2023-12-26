@@ -39,7 +39,7 @@ char tun_dev[IFNAMSIZ] = "tun0";
 #define NIPQUAD(m)	((unsigned char*) &(m))[0], ((unsigned char*) &(m))[1], ((unsigned char*) &(m))[2], ((unsigned char*) &(m))[3]
 #define errquit(m)	{ perror(m); exit(-1); }
 #define MTU 1400
-#define MAXLINE 1500
+#define MAXLINE 2000
 #define MYADDR		0x0a0000fe // 10.0.0.254
 // char MYADDR[10] = "0a0000fe";
 #define ADDRBASE	0x0a00000a // 10.0.0.10
@@ -80,7 +80,7 @@ ifreq_get_flag(int fd, const char *dev, short *flag) {
 	struct ifreq ifr;
 	memset(&ifr, 0, sizeof(ifr));
 	if(dev) strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-	//cout << "get_flag fd: " << fd << endl;
+	cout << "get_flag fd: " << fd << endl;
 	err = ioctl(fd, SIOCGIFFLAGS, &ifr);
 	if(err == 0) {
 		*flag = ifr.ifr_flags;
@@ -93,7 +93,7 @@ ifreq_set_flag(int fd, const char *dev, short flag) {
 	struct ifreq ifr;
 	memset(&ifr, 0, sizeof(ifr));
 	if(dev) strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-	//cout << "HAHA, fd: " << fd << endl;
+	cout << "HAHA, fd: " << fd << endl;
 	ifr.ifr_flags = flag;
 	return ioctl(fd, SIOCSIFFLAGS, &ifr);
 }
@@ -127,7 +127,7 @@ ifreq_set_broadcast(int fd, const char *dev, unsigned int addr) {
 
 
 static void run(const char *cmd) {
-//   printf("Execute `%s`\n", cmd);
+  printf("Execute `%s`\n", cmd);
   char auth_cmd[100];
 //   sprintf(auth_cmd, "sudo %s", cmd);
   if (system(cmd)) {
@@ -157,6 +157,32 @@ static std::string get_eth0_ip() {
 	}
     return result;
 }
+
+// void setup_route_table(string ip_addr) {
+// 	// run("sysctl -w net.ipv4.ip_forward=1");
+// 	run("iptables -I FORWARD 1 -i tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT");
+// 	run("iptables -I FORWARD 1 -o tun0 -j ACCEPT");
+// 	run("ip route add 0/1 dev tun0");
+//   	run("ip route add 128/1 dev tun0");
+// // #ifdef AS_CLIENT
+// //   run("iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE");
+// //   run("iptables -I FORWARD 1 -i tun0 -m state --state RELATED,ESTABLISHED -j ACCEPT");
+// //   run("iptables -I FORWARD 1 -o tun0 -j ACCEPT");
+// //   char cmd[1024];
+// //   snprintf(cmd, sizeof(cmd), "ip route add %s via $(ip route show 0/0 | sed -e 's/.* via \([^ ]*\).*/\1/')", SERVER_HOST);
+// //   run(cmd);
+// //   run("ip route add 0/1 dev tun0");
+// //   run("ip route add 128/1 dev tun0");
+// // #else
+// //   run("iptables -t nat -A POSTROUTING -s 10.8.0.0/16 ! -d 10.8.0.0/16 -m comment --comment 'vpndemo' -j MASQUERADE");
+// //   run("iptables -A FORWARD -s 10.8.0.0/16 -m state --state RELATED,ESTABLISHED -j ACCEPT");
+// //   run("iptables -A FORWARD -d 10.8.0.0/16 -j ACCEPT");
+// // #endif
+// 	string rule_cmd = "ip rule add table 128 from " + ip_addr; 
+// 	run(rule_cmd.c_str());
+// 	run("ip route add table 128 to 172.28.28.0/24 dev eth0");
+// 	run("ip route add table 128 default via 172.28.28.1");
+// }
 void setup_route_table(const char* client_ip, const char* server_ip, int serial, int is_client) {
 	// run("sysctl -w net.ipv4.ip_forward=1");
 	char cmd[1024];
@@ -259,27 +285,29 @@ tunvpn_server(int port) {
 		close(sockfd);
 		errquit("tun_alloc");
 	}
-	//cout << "Allocate fd: " << tun_fd_serv << endl;
+	cout << "Allocate fd: " << tun_fd_serv << endl;
 	unsigned int addr = MYADDR;
 	
 	addr = htonl(addr);
-	//cout << "server addr: ";
+	cout << "server addr: ";
 	printf("%u.%u.%u.%u\n", NIPQUAD(addr));
 	string phy_serv_ip = get_eth0_ip();
     snprintf(server_ip_tun, sizeof(server_ip_tun),"%u.%u.%u.%u", NIPQUAD(addr)); // output to c_str
-	string server_ip_tun_str(server_ip_tun);
-	ip_serial_table[phy_serv_ip] = {server_ip_tun_str, port};
-	ip_serial_table[server_ip_tun_str] = {phy_serv_ip, port};
 	if(ifreq_set_addr(sockfd, tun_dev, addr) < 0){
 		close(sockfd);
 		close(tun_fd_serv);
 		errquit("ifreq_set_addr");
 	}
     
+	// ss.str("");
+    // ss.clear();
+	// ss << std::hex << NETMASK;
+	// ss >> x;
+	// cout << "server netmask: " << x;
 	unsigned int mask = NETMASK;
 	// sscanf(NETMASK, "%x", &mask);
 	mask = htonl(mask);
-	//cout << "server mask: ";
+	cout << "server mask: ";
 	printf("%u.%u.%u.%u\n", NIPQUAD(mask));
 	if(ifreq_set_netmask(sockfd, tun_dev, mask) < 0){
 		close(sockfd);
@@ -324,7 +352,7 @@ tunvpn_server(int port) {
 		FD_SET(tun_fd_serv, &readset);
 		FD_SET(sockfd, &readset);
 		int max_fd = max(tun_fd_serv, sockfd) + 1;
-        //cout << "================================\n";
+        cout << "================================\n";
 		// select block when none of fd in readset "ready"
 		if (-1 == select(max_fd, &readset, NULL, NULL, NULL)) {
 			// perror("select error");
@@ -342,37 +370,30 @@ tunvpn_server(int port) {
 				// errquit("read from tun_fd error");
 				cout << "read from <<tun>> error\n";
 				continue;
+			}else{
+				cout << "read from <<tun>> fd\n";
 			}
-			// else{
-			// 	cout << "read from <<tun>> " << r << "bytes\n";
-			// }
             struct iphdr* ip_header = reinterpret_cast<struct iphdr*>(tun_buf);
 			bzero(&src_ip, sizeof(src_ip));
 			inet_ntop(AF_INET, &(ip_header->saddr), src_ip, INET_ADDRSTRLEN);
 			bzero(&dest_ip, sizeof(dest_ip));
 			inet_ntop(AF_INET, &(ip_header->daddr), dest_ip, INET_ADDRSTRLEN);
-            // cout << "src: " << src_ip << " dest: " << dest_ip << endl;
+            cout << "src: " << src_ip << " dest: " << dest_ip << endl;
 			bzero(&udp_buf, sizeof(udp_buf));
 			// encrypt(tun_buf, udp_buf, r);
 			memcpy(udp_buf, tun_buf, r);
-
-            string dest_ip_str(dest_ip);
-			string dest_map_ip = ip_serial_table[dest_ip_str].addr;
-			int dest_port = ip_serial_table[dest_ip_str].port;
-			if(inet_pton(AF_INET, dest_map_ip.c_str(), &cli_addr.sin_addr) != 1) {
-				errquit("cannot convert IPv4 address");
-			}
-			cli_addr.sin_port = htons(dest_port);
+            char clientIP[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(cli_addr.sin_addr), clientIP, INET_ADDRSTRLEN);
+            cout << "send to client ip addr: " << clientIP << endl;
 			r = sendto(sockfd, udp_buf, r, 0, (struct sockaddr *) &cli_addr, clilen);
 			if (r < 0) {
 				// TODO: ignore some errno
 				// errquit("sendto udp_fd error");
 				cout << "sendto <<UDP>> error\n";
 				continue;
+			}else{
+				printf("Writing to <<UDP>> %d bytes ...\n", r);
 			}
-			// else{
-			// 	cout << "sendto <<UDP>> " << r << "bytes\n";
-			// }
 		}
 		if (FD_ISSET(sockfd, &readset)) {
 			counter++;
@@ -382,16 +403,15 @@ tunvpn_server(int port) {
             // Convert the client's IP address to a string
             char clientIP[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(cli_addr.sin_addr), clientIP, INET_ADDRSTRLEN);
-            // cout << "recv client ip addr: " << clientIP << endl;
+            cout << "recv client ip addr: " << clientIP << endl;
 			if (r < 0) {
 				// TODO: ignore some errno
 				// errquit("recvfrom udp_fd error");
 				cout << "recvfrom <<UDP>> error\n";
 				continue;
+			}else{
+				cout << "read from <<UDP>> fd(client)\n";
 			}
-			// else{
-			// 	cout << "recvfrom <<UDP>> " << r << "bytes\n";
-			// }
 			struct iphdr* ip_header = reinterpret_cast<struct iphdr*>(udp_buf);
 			bzero(&src_ip, sizeof(src_ip));
 			inet_ntop(AF_INET, &(ip_header->saddr), src_ip, INET_ADDRSTRLEN);
@@ -405,7 +425,7 @@ tunvpn_server(int port) {
 			// if((tun_fd_cli = tun_alloc(tun_dev)) < 0){
 			// 	errquit("tun_alloc");
 			// }
-            // cout << "src: " << src_ip << " dest: " << dest_ip << endl;
+            cout << "src: " << src_ip << " dest: " << dest_ip << endl;
             int is_src_serv = strncmp(src_ip, server_ip_tun, INET_ADDRSTRLEN);
             if(is_src_serv == 0){/*packet received from udp isn't possible has src ip equal to server*/
                 errquit("Routing error");
@@ -430,16 +450,13 @@ tunvpn_server(int port) {
 				cout << "new client connect in!\n";
 				/*====show server ip_serial_table====*/
 				for (const auto & entry: ip_serial_table){
-					cout << "ip: " << entry.first << " map_ip: " << entry.second.addr << " map_port: "<<entry.second.port <<endl;
+					cout << "ip: " << entry.first << " map_ip: " << entry.second.addr << "map_port: "<<entry.second.port <<endl;
 				}
 				bzero(&udp_buf, sizeof(udp_buf));
 				sprintf(udp_buf, "%u\n", client_num);
 				if(sendto(sockfd, udp_buf, strlen(udp_buf), 0, (struct sockaddr *) &cli_addr, clilen) < 0){
 					errquit("server-handle_client net configuration send error");
 				}
-				// else{
-				// 	cout << "sendto <<UDP>> " << r << "bytes\n";
-				// }
 			}else{/*receive packet sended with ping or iperf3*/
 				/*
 					check if destination ip of received pkt is the same as server
@@ -452,7 +469,7 @@ tunvpn_server(int port) {
                 if(is_dest_phy == 0 || is_dest_tun == 0){/*dest_ip == server_ip_tun*/
                     bzero(&tun_buf, sizeof(tun_buf));
                     memcpy(tun_buf, udp_buf, r);
-                    // printf("Writing to <<tun>> %d bytes ...\n", r);
+                    printf("Writing to <<tun>> %d bytes ...\n", r);
 
                     r = write(tun_fd_serv, tun_buf, r);
                     if (r < 0) {
@@ -461,14 +478,11 @@ tunvpn_server(int port) {
                         cout << "write <<tun>> error\n";
                         continue;
                     }
-					// else{
-					// 	cout << "write <<tun>> " << r << "bytes\n";
-					// }
 			    }else{/*dest_ip is any other client*/
                     string dest_ip_str(dest_ip);
                     string dest_ip_map = ip_serial_table[dest_ip_str].addr;
 					int dest_port = ip_serial_table[dest_ip_str].port;
-                    // cout << "dest ip map: " << dest_ip_map << endl;
+                    cout << "dest ip map: " << dest_ip_map << endl;
 					struct sockaddr_in dest_addr;
 					bzero(&dest_addr, sizeof(dest_addr));
 					dest_addr.sin_family = AF_INET;  // IPv4
@@ -485,22 +499,31 @@ tunvpn_server(int port) {
                     // serv_addr2.sin_port = htons(port);
 
                     memcpy(udp_sendline, udp_buf, r);
-                   	r = sendto(sockfd, udp_sendline, r, 0, (struct sockaddr *) &dest_addr, sizeof(dest_addr));
+                    // int sockfd2;
+                    // if ((sockfd2 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) errquit("server create socket");
+                    // const int enable_addr = 1;
+                    // if (setsockopt(sockfd2, SOL_SOCKET, SO_REUSEADDR, &enable_addr, sizeof(int)) < 0)
+                    //     errquit("setsockopt(SO_REUSEADDR) failed");
+                    // const int enable_port = 1;
+                    // if (setsockopt(sockfd2, SOL_SOCKET, SO_REUSEPORT, &enable_port, sizeof(int)) < 0)
+                    //     errquit("setsockopt(SO_REUSEPORT) failed");
+                    // if(bind(sockfd2, (const struct sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) errquit("server bind");
+                    r = sendto(sockfd, udp_sendline, r, 0, (struct sockaddr *) &dest_addr, sizeof(dest_addr));
 					if (r < 0) {
 						// TODO: ignore some errno
 						// errquit("sendto udp_fd error");
                         errquit("sendto <<UDP>> error");
+					}else{
+						printf("Writing to <<UDP>> %d bytes ...\n", r);
 					}
-					// else{
-					// 	cout << "sendto <<UDP>> " << r << "bytes\n";
-					// }
+                    
                 }
             }
 		}
-        // cout << "================================\n";
-		// if(counter == 0){
-		// 	cout << "waiting packet...\n";
-		// }
+        cout << "================================\n";
+		if(counter == 0){
+			cout << "waiting packet...\n";
+		}
 
 	}
 	return 0;
@@ -570,17 +593,19 @@ tunvpn_client(const char *server, int port) {
     strcpy(sendline + sizeof(struct iphdr), "Hello, Server!");
 	
 	// write to vpn network, so ping can catch it
-	if(sendto(sockfd, sendline, sizeof(struct iphdr)+strlen("Hello, Server!"), 0, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0){
+	if(sendto(sockfd, sendline, sizeof(sendline), 0, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0){
 		errquit("client sockfd write wrong");
 	}
+	else{ cout << "send hello success!\n"; }
 	bzero(&rcvbuf, sizeof(rcvbuf));
 	if((n = recvfrom(sockfd, rcvbuf, MTU, 0, NULL, NULL)) < 0){
 		errquit("client sockfd rcv wrong");
 	}
+	else{ cout << "read from server success!\n";}
 	int cli_num = 0;
 	sscanf(rcvbuf, "%d\n", &cli_num);
 	unsigned int cli_tun_addr = ADDRBASE; cli_tun_addr += cli_num;
-	// cout << "cli number: " << cli_num << endl;
+	cout << "cli number: " << cli_num << endl;
 	int tun_fd_cli;
 	if((tun_fd_cli = tun_alloc(tun_dev)) < 0){
 		errquit("tun_alloc");
@@ -635,7 +660,7 @@ tunvpn_client(const char *server, int port) {
 		}
 		int r;
 		int counter = 0;
-        // cout << "===========================\n";
+        cout << "===========================\n";
 		if (FD_ISSET(tun_fd_cli, &readset)) {
 			counter++;
 			r = read(tun_fd_cli, tun_buf, MTU);
@@ -644,13 +669,15 @@ tunvpn_client(const char *server, int port) {
 				// errquit("read from tun_fd error");
 				cout << "read from <<tun_fd>> error\n";
 				continue;
+			}else{
+				cout << "read from <<tun>> fd\n";
 			}
             struct iphdr* ip_header = reinterpret_cast<struct iphdr*>(tun_buf);
 			bzero(&src_ip, sizeof(src_ip));
 			inet_ntop(AF_INET, &(ip_header->saddr), src_ip, INET_ADDRSTRLEN);
 			bzero(&dest_ip, sizeof(dest_ip));
 			inet_ntop(AF_INET, &(ip_header->daddr), dest_ip, INET_ADDRSTRLEN);
-            // cout << "src: " << src_ip << " dest: " << dest_ip << endl;
+            cout << "src: " << src_ip << " dest: " << dest_ip << endl;
 			// encrypt(tun_buf, udp_buf, r);
 			memcpy(udp_buf, tun_buf, r);
 
@@ -660,6 +687,8 @@ tunvpn_client(const char *server, int port) {
 				// errquit("sendto udp_fd error");
 				cout << "sendto <<UDP>> error\n";
 				continue;
+			}else{
+				printf("Writing to <<UDP>> %d bytes ...\n", r);
 			}
 		}
 		if (FD_ISSET(sockfd, &readset)) {
@@ -670,16 +699,15 @@ tunvpn_client(const char *server, int port) {
 				// errquit("recvfrom udp_fd error");
 				cout << "recvfrom <<UDP>> error\n";
 				continue;
+			}else{
+				cout << "read from <<UDP>> fd\n";
 			}
-			// else{
-				// cout << "recvfrom <<UDP>> " << r << " bytes\n"; 
-			// }
             struct iphdr* ip_header = reinterpret_cast<struct iphdr*>(udp_buf);
 			bzero(&src_ip, sizeof(src_ip));
 			inet_ntop(AF_INET, &(ip_header->saddr), src_ip, INET_ADDRSTRLEN);
 			bzero(&dest_ip, sizeof(dest_ip));
 			inet_ntop(AF_INET, &(ip_header->daddr), dest_ip, INET_ADDRSTRLEN);
-            // cout << "src: " << src_ip << " dest: " << dest_ip << endl;
+            cout << "src: " << src_ip << " dest: " << dest_ip << endl;
 			memcpy(tun_buf, udp_buf, r);
 
 			r = write(tun_fd_cli, tun_buf, r);
@@ -688,11 +716,13 @@ tunvpn_client(const char *server, int port) {
 				// errquit("write tun_fd error");
 				cout << "write <<tun_fd>> error\n";
 				continue;
+			}else{
+				printf("Writing to <<tun>> %d bytes ...\n", r);
 			}
 		}
-        //cout << "===========================\n";
+        cout << "===========================\n";
 		if(counter == 0){
-			//cout << "waiting packet...\n";
+			cout << "waiting packet...\n";
 		}
 	}
 	return 0;

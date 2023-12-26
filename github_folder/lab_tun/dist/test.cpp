@@ -160,7 +160,7 @@ static std::string get_eth0_ip() {
 }
 
 void setup_route_table(string client_ip, char* server_ip, int serial, int is_client) {
-	// run("sysctl -w net.ipv4.ip_forward=1");
+	run("sysctl -w net.ipv4.ip_forward=1");
 	if(is_client){
 		int table_num = 128+serial;
 		run("iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE");
